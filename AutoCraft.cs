@@ -1,6 +1,6 @@
 // AutoCraft 自动合成插件
 // 作者: 35117 + Deepseek-v4-flash-0731
-// 版本 v26.8.11.12.1
+// 版本 v26.8.11.1
 // 功能一（合成，主）：每次背包获得物品时，检查配置中的配方；材料不足按配置提示，充足则自动合成。
 //      可选"保留一份原材料"：每种材料至少保留 1 份，保留后仍够一批才合成。
 // 功能二（回收，辅）：拾取配置中的物品时，自动检测其 Salvage（拆解）蓝图并回收成废料；
@@ -22,7 +22,7 @@ using UnityEngine;
 
 namespace AutoCraft
 {
-    [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.11.12.1")]
+    [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.11.1")]
     public class AutoCraftPlugin : BaseUnityPlugin
     {
         private const string GeneralSection = "General";
