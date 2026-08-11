@@ -11,10 +11,13 @@ echo [AutoCraft] 正在编译...
 "%CSC%" /nologo /t:library /codepage:65001 /out:"%GAME%\BepInEx\Plugins\AutoCraftMod.dll" ^
   /r:"%GAME%\Unturned_Data\Managed\netstandard.dll" ^
   /r:"%GAME%\BepInEx\core\BepInEx.dll" ^
+  /r:"%GAME%\BepInEx\core\0Harmony.dll" ^
   /r:"%GAME%\Unturned_Data\Managed\UnityEngine.dll" ^
   /r:"%GAME%\Unturned_Data\Managed\UnityEngine.CoreModule.dll" ^
+  /r:"%GAME%\Unturned_Data\Managed\UnityEngine.InputLegacyModule.dll" ^
   /r:"%GAME%\Unturned_Data\Managed\Assembly-CSharp.dll" ^
   /r:"%GAME%\Unturned_Data\Managed\UnturnedDat.dll" ^
+  /r:"%GAME%\Unturned_Data\Managed\SDG.Glazier.Runtime.dll" ^
   "%~dp0AutoCraft.cs"
 
 if %ERRORLEVEL% EQU 0 (

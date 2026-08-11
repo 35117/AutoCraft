@@ -1,11 +1,13 @@
 // AutoCraft 自动合成插件
 // 作者: 35117 + Deepseek-v4-flash-0731
 // 版本 v26.8.11.1
-// 功能一（合成，主）：每次背包获得物品时，检查配置中的配方；材料不足按配置提示，充足则自动合成。
+// 功能一（合成，主）：每次背包获得物品后，检查配置中的配方；材料不足按配置提示，充足则自动合成。
 //      可选"保留一份原材料"：每种材料至少保留 1 份，保留后仍够一批才合成。
-// 功能二（回收，辅）：拾取配置中的物品时，自动检测其 Salvage（拆解）蓝图并回收成废料；
-//      支持白名单/黑名单模式与"保底保留 1 个"。
-// 功能三（修复）：耐久低于阈值时自动修复主手/副手/背包物品；材料不足可提示、可切换空手防损坏。
+//      合成界面 Alt+左键点击配方可标记/取消标记自动合成。
+// 功能二（回收，辅）：物品进入背包后自动检测其 Salvage（拆解）蓝图并回收成废料；
+//      支持白名单/黑名单模式与"保底保留 1 个"；背包界面 Alt+左键点击物品可标记/取消标记自动回收。
+// 功能三（修复）：耐久低于阈值时自动修复主手/副手/背包物品；手持主副手时每 1 秒检测，未手持时每 5 秒；
+//      未手持时不提示（仍自动修复）；材料不足时手持物品才提示，并可切换空手防损坏。
 // 适用：单人游戏 / 本地主机（Provider.isServer 为真时生效）。专用服务器无效。
 // 配置：BepInEx\config\com.trae.autorecycle.cfg
 //       ItemRules 带 "Unturned.ItemList" 标签，BlueprintRules 带 "Unturned.BlueprintList" 标签；
@@ -15,8 +17,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using BepInEx;
 using BepInEx.Configuration;
+using HarmonyLib;
 using SDG.Unturned;
 using UnityEngine;
 
@@ -25,6 +29,20 @@ namespace AutoCraft
     [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.11.1")]
     public class AutoCraftPlugin : BaseUnityPlugin
     {
+        // 供 Harmony 补丁访问插件实例与日志
+        internal static AutoCraftPlugin Instance;
+
+        internal static void LogErrorStatic(string message)
+        {
+            if (Instance != null)
+            {
+                Instance.Logger.LogError(message);
+            }
+            else
+            {
+                UnityEngine.Debug.LogError(message);
+            }
+        }
         private const string GeneralSection = "General";
         private const string CraftSection = "AutoCraft";
         private const string RecycleSection = "RecycleRules";
@@ -87,6 +105,8 @@ namespace AutoCraft
         private float nextConfigCheckTime;
         private float nextScanTime;
         private float nextRepairTime;
+        // 待处理物品（进入背包后延迟一小段时间再处理，避免拾取动画/数据未落定的问题）
+        private readonly Dictionary<ushort, float> pendingItemAddTimes = new Dictionary<ushort, float>();
 
         private void Awake()
         {
@@ -154,6 +174,9 @@ namespace AutoCraft
                 Player.onPlayerDestroyed += OnPlayerDestroyed;
                 Level.onLevelLoaded += OnLevelLoaded;
 
+                Instance = this;
+                Harmony.CreateAndPatchAll(typeof(AutoCraftPlugin).Assembly);
+
                 Logger.LogInfo("[AutoCraft] 插件启动完成");
             }
             catch (Exception exception)
@@ -168,6 +191,7 @@ namespace AutoCraft
             Player.onPlayerDestroyed -= OnPlayerDestroyed;
             Level.onLevelLoaded -= OnLevelLoaded;
             Unsubscribe();
+            Instance = null;
         }
 
         private void OnPlayerDestroyed(Player player)
@@ -251,10 +275,30 @@ namespace AutoCraft
                     ScanExistingItems(false);
                 }
 
-                // 自动修复定时检查（每 5 秒）
+                // 处理进入背包满 0.3 秒的物品（合成/回收只在物品真正进入背包后执行）
+                if (pendingItemAddTimes.Count > 0 && subscribed && localPlayer != null)
+                {
+                    List<ushort> ready = new List<ushort>();
+                    float now = Time.realtimeSinceStartup;
+                    foreach (KeyValuePair<ushort, float> pair in pendingItemAddTimes)
+                    {
+                        if (now - pair.Value >= 0.3f)
+                        {
+                            ready.Add(pair.Key);
+                        }
+                    }
+                    foreach (ushort id in ready)
+                    {
+                        pendingItemAddTimes.Remove(id);
+                        ProcessItem(id);
+                    }
+                }
+
+                // 自动修复定时检查：手持主/副手武器时每 1 秒，否则每 5 秒
                 if (subscribed && cfgRepairEnabled.Value && Time.realtimeSinceStartup >= nextRepairTime)
                 {
-                    nextRepairTime = Time.realtimeSinceStartup + 5f;
+                    float interval = IsHoldingMainOrOffHand() ? 1f : 5f;
+                    nextRepairTime = Time.realtimeSinceStartup + interval;
                     TryRepairAll();
                 }
             }
@@ -486,25 +530,46 @@ namespace AutoCraft
                 {
                     AnnouncePickedUpItem(jar.item, cfgPickupIdAnnounce.Value);
                 }
-                if (cfgCraftEnabled.Value)
+                // 合成/回收延迟到物品进入背包 0.3 秒后再处理
+                if (!pendingItemAddTimes.ContainsKey(jar.item.id))
                 {
-                    EnsureCraftBlueprintsResolved();
-                    foreach (Blueprint blueprint in craftBlueprints)
-                    {
-                        if (blueprint != null && BlueprintUsesItem(blueprint, jar.item.id))
-                        {
-                            TryCraftBlueprint(blueprint, true);
-                        }
-                    }
-                }
-                if (cfgRecycleEnabled.Value && IsRecycleItem(jar.item.id))
-                {
-                    TryRecycle(jar.item.id, true);
+                    pendingItemAddTimes[jar.item.id] = Time.realtimeSinceStartup;
                 }
             }
             catch (Exception exception)
             {
                 Logger.LogError("[AutoCraft] 处理拾取事件异常：" + exception);
+            }
+        }
+
+        // 物品进入背包后统一处理：先查合成配方，再查回收
+        private void ProcessItem(ushort itemId)
+        {
+            if (!subscribed || localPlayer == null)
+            {
+                return;
+            }
+            try
+            {
+                if (cfgCraftEnabled.Value)
+                {
+                    EnsureCraftBlueprintsResolved();
+                    foreach (Blueprint blueprint in craftBlueprints)
+                    {
+                        if (blueprint != null && BlueprintUsesItem(blueprint, itemId))
+                        {
+                            TryCraftBlueprint(blueprint, true);
+                        }
+                    }
+                }
+                if (cfgRecycleEnabled.Value && IsRecycleItem(itemId))
+                {
+                    TryRecycle(itemId, true);
+                }
+            }
+            catch (Exception exception)
+            {
+                Logger.LogError("[AutoCraft] 处理物品 " + itemId + " 异常：" + exception);
             }
         }
 
@@ -822,8 +887,8 @@ namespace AutoCraft
                 return;
             }
 
-            // 材料不足（或无修复蓝图）且仍存在低耐久物品
-            if (cfgRepairNotifyNoMaterials.Value && ShouldNotify("repair:" + itemId))
+            // 材料不足（或无修复蓝图）且仍存在低耐久物品：仅当该物品正手持时才提示（未手持仍会静默尝试修复）
+            if (cfgRepairNotifyNoMaterials.Value && IsEquippedAtRisk(itemId) && ShouldNotify("repair:" + itemId))
             {
                 ItemAsset asset = Assets.find(EAssetType.ITEM, itemId) as ItemAsset;
                 string name = asset != null ? asset.FriendlyName : itemId.ToString();
@@ -902,6 +967,102 @@ namespace AutoCraft
             }
             ItemJar jar = items.getItem(0);
             return jar != null && jar.item != null && jar.item.id == itemId && jar.item.quality < cfgRepairMinQuality.Value;
+        }
+
+        // 是否正手持主手/副手武器（决定修复检测间隔与是否提示）
+        private bool IsHoldingMainOrOffHand()
+        {
+            if (localPlayer == null || localPlayer.equipment == null)
+            {
+                return false;
+            }
+            byte page = localPlayer.equipment.equippedPage;
+            return page == (byte)(PlayerInventory.BACKPACK - 3) || page == (byte)(PlayerInventory.BACKPACK - 2);
+        }
+
+        // ---------- Alt+左键 快捷标记 ----------
+
+        // Alt+左键点击背包物品：标记/取消标记自动回收
+        internal void ToggleItemRule(ushort itemId)
+        {
+            if (cfgItemRules == null)
+            {
+                return;
+            }
+            string key = itemId.ToString();
+            bool added = ToggleCsvEntry(cfgItemRules, key);
+            Config.Save();
+            ReloadRules();
+            string msg = added ? "已将物品 ID " + itemId + " 加入自动回收清单" : "已将物品 ID " + itemId + " 移出自动回收清单";
+            SendNotify(cfgRecycleNotifyTarget.Value, msg, added ? Color.green : Color.yellow);
+            Logger.LogInfo("[AutoCraft] " + msg);
+        }
+
+        // Alt+左键点击合成界面配方：标记/取消标记自动合成
+        internal void ToggleBlueprintRule(Blueprint blueprint)
+        {
+            if (blueprint == null || cfgBlueprintRules == null)
+            {
+                return;
+            }
+            Asset ownerAsset = blueprint.GetOwnerAsset();
+            if (ownerAsset == null)
+            {
+                return;
+            }
+            string key = ownerAsset.id + ":" + blueprint.Index;
+            bool added = ToggleCsvEntry(cfgBlueprintRules, key);
+            Config.Save();
+            ReloadRules();
+            string msg = added ? "已将配方 " + GetBlueprintOutputName(blueprint) + "（" + key + "）加入自动合成" : "已将配方 " + GetBlueprintOutputName(blueprint) + "（" + key + "）移出自动合成";
+            SendNotify(cfgCraftNotifyTarget.Value, msg, added ? Color.green : Color.yellow);
+            Logger.LogInfo("[AutoCraft] " + msg);
+        }
+
+        // 在逗号分隔的配置项中切换一个条目（存在则移除，不存在则追加），返回是否新增
+        private bool ToggleCsvEntry(ConfigEntry<string> entry, string entryValue)
+        {
+            List<string> items = new List<string>();
+            string current = entry.Value;
+            if (!string.IsNullOrWhiteSpace(current))
+            {
+                foreach (string part in current.Split(','))
+                {
+                    string trimmed = part != null ? part.Trim() : string.Empty;
+                    if (trimmed.Length > 0)
+                    {
+                        items.Add(trimmed);
+                    }
+                }
+            }
+            bool added;
+            if (items.Remove(entryValue))
+            {
+                added = false;
+            }
+            else
+            {
+                items.Add(entryValue);
+                added = true;
+            }
+            items.Sort(StringComparer.Ordinal);
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (i > 0)
+                {
+                    builder.Append(", ");
+                }
+                builder.Append(items[i]);
+            }
+            entry.Value = builder.ToString();
+            return added;
+        }
+
+        // 是否按住 Alt 键
+        private static bool IsAltHeld()
+        {
+            return Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
         }
 
         // ---------- 回收 ----------
@@ -1226,6 +1387,73 @@ namespace AutoCraft
         {
             OwnerId = ownerId;
             Index = index;
+        }
+    }
+
+    // Alt+左键点击合成界面配方：标记/取消标记自动合成（跳过原点击行为）
+    [HarmonyPatch(typeof(PlayerDashboardCraftingUI), "OnClickedBlueprint")]
+    internal static class PatchBlueprintAltClick
+    {
+        internal static bool Prefix(object blueprintStatus)
+        {
+            if (!IsAltHeld())
+            {
+                return true;
+            }
+            try
+            {
+                if (AutoCraftPlugin.Instance != null && blueprintStatus != null)
+                {
+                    System.Reflection.FieldInfo field = blueprintStatus.GetType().GetField("blueprint",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                    Blueprint blueprint = field != null ? (Blueprint)field.GetValue(blueprintStatus) : null;
+                    AutoCraftPlugin.Instance.ToggleBlueprintRule(blueprint);
+                }
+            }
+            catch (Exception exception)
+            {
+                AutoCraftPlugin.LogErrorStatic("[AutoCraft] Alt标记配方异常：" + exception);
+            }
+            return false;
+        }
+
+        private static bool IsAltHeld()
+        {
+            return Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+        }
+    }
+
+    // Alt+左键点击背包物品：标记/取消标记自动回收（跳过原拖拽行为）
+    [HarmonyPatch(typeof(PlayerDashboardInventoryUI), "onGrabbedItem")]
+    internal static class PatchItemAltClick
+    {
+        internal static bool Prefix(object item)
+        {
+            if (!IsAltHeld())
+            {
+                return true;
+            }
+            try
+            {
+                if (AutoCraftPlugin.Instance != null)
+                {
+                    SleekItem sleekItem = item as SleekItem;
+                    if (sleekItem != null && sleekItem.jar != null && sleekItem.jar.item != null)
+                    {
+                        AutoCraftPlugin.Instance.ToggleItemRule(sleekItem.jar.item.id);
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                AutoCraftPlugin.LogErrorStatic("[AutoCraft] Alt标记物品异常：" + exception);
+            }
+            return false;
+        }
+
+        private static bool IsAltHeld()
+        {
+            return Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
         }
     }
 }
