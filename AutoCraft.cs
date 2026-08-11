@@ -1,6 +1,6 @@
 // AutoCraft 自动合成插件
 // 作者: 35117 + Deepseek-v4-flash-0731
-// 版本 v26.8.11.1
+// 版本 v26.8.11.2
 // 功能一（合成，主）：每次背包获得物品后，检查配置中的配方；材料不足按配置提示，充足则自动合成。
 //      可选"保留一份原材料"：每种材料至少保留 1 份，保留后仍够一批才合成。
 //      合成界面 Alt+左键点击配方可标记/取消标记自动合成。
@@ -26,7 +26,7 @@ using UnityEngine;
 
 namespace AutoCraft
 {
-    [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.11.1")]
+    [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.11.2")]
     public class AutoCraftPlugin : BaseUnityPlugin
     {
         // 供 Harmony 补丁访问插件实例与日志
