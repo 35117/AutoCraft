@@ -1,6 +1,6 @@
 // AutoCraft 自动合成插件
 // 作者: 35117 + Deepseek-v4-flash-0731
-// 版本 v26.8.11.2
+// 版本 v26.8.12.1
 // 功能一（合成，主）：每次背包获得物品后，检查配置中的配方；材料不足按配置提示，充足则自动合成。
 //      可选"保留一份原材料"：每种材料至少保留 1 份，保留后仍够一批才合成。
 //      合成界面 Alt+左键点击配方可标记/取消标记自动合成。
@@ -11,7 +11,8 @@
 // 适用：单人游戏 / 本地主机（Provider.isServer 为真时生效）。专用服务器无效。
 // 配置：BepInEx\config\com.trae.autorecycle.cfg
 //       ItemRules 带 "Unturned.ItemList" 标签，BlueprintRules 带 "Unturned.BlueprintList" 标签；
-//       Off/Popup/Chat/Both 等字符串选项带 "Unturned.Cycle" 标签，可在插件管理器中用按钮循环切换。
+//       Off/Popup/Chat/Both 等字符串选项带 "Unturned.Cycle" 标签，可在插件管理器中用按钮循环切换；
+//       全部配置带 "Unturned.Category:分类名" 标签，插件管理器左侧分类导航按 通用设置/自动合成/自动回收/自动修复 分组显示。
 // 编译目标：.NET Framework 4.x（BepInEx 5），C# 5 语法。
 
 using System;
@@ -26,7 +27,7 @@ using UnityEngine;
 
 namespace AutoCraft
 {
-    [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.11.2")]
+    [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.12.1")]
     public class AutoCraftPlugin : BaseUnityPlugin
     {
         // 供 Harmony 补丁访问插件实例与日志
@@ -47,6 +48,51 @@ namespace AutoCraft
         private const string CraftSection = "AutoCraft";
         private const string RecycleSection = "RecycleRules";
         private const string RepairSection = "AutoRepair";
+
+        // PluginManager 配置分类标签（界面左侧分类导航按此分组显示）
+        private const string CatGeneral = "Unturned.Category:通用设置";
+        private const string CatCraft = "Unturned.Category:自动合成";
+        private const string CatRecycle = "Unturned.Category:自动回收";
+        private const string CatRepair = "Unturned.Category:自动修复";
+
+        // 生成带 PluginManager 分类标签的配置描述（额外标签如 Unturned.ItemList / Unturned.Cycle 原样合并）
+        private static ConfigDescription Category(string categoryTag, string description, params object[] extraTags)
+        {
+            object[] tags;
+            if (extraTags == null || extraTags.Length == 0)
+            {
+                tags = new object[] { categoryTag };
+            }
+            else
+            {
+                tags = new object[extraTags.Length + 1];
+                tags[0] = categoryTag;
+                for (int i = 0; i < extraTags.Length; i++)
+                {
+                    tags[i + 1] = extraTags[i];
+                }
+            }
+            return new ConfigDescription(description, null, tags);
+        }
+
+        private static ConfigDescription Category(string categoryTag, string description, AcceptableValueBase acceptableValues, params object[] extraTags)
+        {
+            object[] tags;
+            if (extraTags == null || extraTags.Length == 0)
+            {
+                tags = new object[] { categoryTag };
+            }
+            else
+            {
+                tags = new object[extraTags.Length + 1];
+                tags[0] = categoryTag;
+                for (int i = 0; i < extraTags.Length; i++)
+                {
+                    tags[i + 1] = extraTags[i];
+                }
+            }
+            return new ConfigDescription(description, acceptableValues, tags);
+        }
 
         // 修复蓝图分类标签（Repair）
         private static readonly Guid RepairCategoryGuid = new Guid("732ee6ffeb18418985cf4f9fde33dd11");
@@ -113,59 +159,61 @@ namespace AutoCraft
             try
             {
                 // ---- 通用配置 ----
-                cfgLogPickedUpItems = Config.Bind(GeneralSection, "LogPickedUpItems", false, "开启后每次拾取物品都会在 BepInEx 日志中打印物品 ID，方便查找需要配置的物品");
+                cfgLogPickedUpItems = Config.Bind(GeneralSection, "LogPickedUpItems", false, Category(CatGeneral, "开启后每次拾取物品都会在 BepInEx 日志中打印物品 ID，方便查找需要配置的物品"));
                 cfgPickupIdAnnounce = Config.Bind(GeneralSection, "PickupIdAnnounce", "Off",
-                    new ConfigDescription("拾取物品时播报 ID：Off=关闭，Popup=屏幕中下方提示栏，Chat=聊天栏",
+                    Category(CatGeneral, "拾取物品时播报 ID：Off=关闭，Popup=屏幕中下方提示栏，Chat=聊天栏",
                         new AcceptableValueList<string>("Off", "Popup", "Chat"),
-                        new object[] { "Unturned.Cycle" }));
-                cfgNotifyCooldownSeconds = Config.Bind(GeneralSection, "NotifyCooldownSeconds", 5f, "同类提示最短间隔（秒），用于防止连捡多个物品时刷屏；0=不限制");
-                cfgScanInterval = Config.Bind(GeneralSection, "ScanInterval", 0f, "定时全量扫描间隔（秒），自动检查库存执行回收/合成，兜住所有来源；0=仅拾取/获得时触发");
+                        "Unturned.Cycle"));
+                cfgNotifyCooldownSeconds = Config.Bind(GeneralSection, "NotifyCooldownSeconds", 5f, Category(CatGeneral, "同类提示最短间隔（秒），用于防止连捡多个物品时刷屏；0=不限制"));
+                cfgScanInterval = Config.Bind(GeneralSection, "ScanInterval", 0f, Category(CatGeneral, "定时全量扫描间隔（秒），自动检查库存执行回收/合成，兜住所有来源；0=仅拾取/获得时触发"));
 
                 // ---- 合成配置（主功能）----
-                cfgCraftEnabled = Config.Bind(CraftSection, "Enabled", true, "自动合成总开关");
-                cfgCraftNotifyCrafted = Config.Bind(CraftSection, "NotifyCrafted", true, "合成成功时是否提示");
-                cfgCraftNotifyNotEnough = Config.Bind(CraftSection, "NotifyNotEnough", true, "材料不足时是否提示还缺什么");
+                cfgCraftEnabled = Config.Bind(CraftSection, "Enabled", true, Category(CatCraft, "自动合成总开关"));
+                cfgCraftNotifyCrafted = Config.Bind(CraftSection, "NotifyCrafted", true, Category(CatCraft, "合成成功时是否提示"));
+                cfgCraftNotifyNotEnough = Config.Bind(CraftSection, "NotifyNotEnough", true, Category(CatCraft, "材料不足时是否提示还缺什么"));
                 cfgCraftNotifyTarget = Config.Bind(CraftSection, "NotifyTarget", "Chat",
-                    new ConfigDescription("合成提示位置：Chat=聊天栏，Popup=屏幕中下方提示栏，Both=两者都显示",
+                    Category(CatCraft, "合成提示位置：Chat=聊天栏，Popup=屏幕中下方提示栏，Both=两者都显示",
                         new AcceptableValueList<string>("Popup", "Chat", "Both"),
-                        new object[] { "Unturned.Cycle" }));
-                cfgCraftKeepOneMaterial = Config.Bind(CraftSection, "KeepOneMaterial", true, "保留一份原材料开关：每种材料至少保留 1 份，保留后仍够一批才会合成");
+                        "Unturned.Cycle"));
+                cfgCraftKeepOneMaterial = Config.Bind(CraftSection, "KeepOneMaterial", true, Category(CatCraft, "保留一份原材料开关：每种材料至少保留 1 份，保留后仍够一批才会合成"));
                 cfgBlueprintRules = Config.Bind(CraftSection, "BlueprintRules", "",
-                    new ConfigDescription("需要自动合成的配方列表，格式: 所属物品ID:配方编号，多条用英文逗号分隔。每次背包获得物品时自动检查：材料不足按 NotifyNotEnough 提示，材料充足自动合成。可在插件管理器中用配方选择器可视化编辑",
-                        null, new object[] { "Unturned.BlueprintList" }));
+                    Category(CatCraft, "需要自动合成的配方列表，格式: 所属物品ID:配方编号，多条用英文逗号分隔。每次背包获得物品时自动检查：材料不足按 NotifyNotEnough 提示，材料充足自动合成。可在插件管理器中用配方选择器可视化编辑",
+                        null,
+                        "Unturned.BlueprintList"));
 
                 // ---- 回收配置（辅助功能）----
-                cfgRecycleEnabled = Config.Bind(RecycleSection, "Enabled", true, "自动回收总开关");
-                cfgRecycleNotifyInChat = Config.Bind(RecycleSection, "NotifyInChat", true, "回收成功时是否提示");
+                cfgRecycleEnabled = Config.Bind(RecycleSection, "Enabled", true, Category(CatRecycle, "自动回收总开关"));
+                cfgRecycleNotifyInChat = Config.Bind(RecycleSection, "NotifyInChat", true, Category(CatRecycle, "回收成功时是否提示"));
                 cfgRecycleNotifyTarget = Config.Bind(RecycleSection, "NotifyTarget", "Chat",
-                    new ConfigDescription("回收提示位置：Chat=聊天栏，Popup=屏幕中下方提示栏，Both=两者都显示",
+                    Category(CatRecycle, "回收提示位置：Chat=聊天栏，Popup=屏幕中下方提示栏，Both=两者都显示",
                         new AcceptableValueList<string>("Popup", "Chat", "Both"),
-                        new object[] { "Unturned.Cycle" }));
-                cfgRemindNotDismantlable = Config.Bind(RecycleSection, "RemindNotDismantlable", true, "拾取配置中「无法拆解」的物品时，是否提醒（每个物品每条会话只提醒一次）");
-                cfgRemindNotEnough = Config.Bind(RecycleSection, "RemindNotEnough", true, "拾取可拆解但数量不足的物品时，是否提醒还需多少个才能拆解");
+                        "Unturned.Cycle"));
+                cfgRemindNotDismantlable = Config.Bind(RecycleSection, "RemindNotDismantlable", true, Category(CatRecycle, "拾取配置中「无法拆解」的物品时，是否提醒（每个物品每条会话只提醒一次）"));
+                cfgRemindNotEnough = Config.Bind(RecycleSection, "RemindNotEnough", true, Category(CatRecycle, "拾取可拆解但数量不足的物品时，是否提醒还需多少个才能拆解"));
                 cfgRecycleMode = Config.Bind(RecycleSection, "RecycleMode", "Whitelist",
-                    new ConfigDescription("回收模式：Whitelist=只回收 ItemRules 中的物品，Blacklist=除 ItemRules 外的可拆解物品全部回收",
+                    Category(CatRecycle, "回收模式：Whitelist=只回收 ItemRules 中的物品，Blacklist=除 ItemRules 外的可拆解物品全部回收",
                         new AcceptableValueList<string>("Whitelist", "Blacklist"),
-                        new object[] { "Unturned.Cycle" }));
-                cfgKeepLastOne = Config.Bind(RecycleSection, "KeepLastOne", true, "保底保留：每个物品始终保留最后 1 个不回收（数量只有 1 时不回收）");
+                        "Unturned.Cycle"));
+                cfgKeepLastOne = Config.Bind(RecycleSection, "KeepLastOne", true, Category(CatRecycle, "保底保留：每个物品始终保留最后 1 个不回收（数量只有 1 时不回收）"));
                 cfgItemRules = Config.Bind(RecycleSection, "ItemRules", "6666, 6667",
-                    new ConfigDescription("回收模式对应的物品 ID 列表，多个用英文逗号分隔，只填 ID。拆解所需数量与产物自动从该物品的游戏 Salvage（拆解）蓝图检测；没有拆解蓝图的物品只会提醒不会回收",
-                        null, new object[] { "Unturned.ItemList" }));
+                    Category(CatRecycle, "回收模式对应的物品 ID 列表，多个用英文逗号分隔，只填 ID。拆解所需数量与产物自动从该物品的游戏 Salvage（拆解）蓝图检测；没有拆解蓝图的物品只会提醒不会回收",
+                        null,
+                        "Unturned.ItemList"));
 
                 // ---- 修复配置 ----
-                cfgRepairEnabled = Config.Bind(RepairSection, "Enabled", true, "自动修复总开关（每 5 秒检查一次耐久）");
-                cfgRepairMainHand = Config.Bind(RepairSection, "RepairMainHand", true, "自动修复主手（页0）物品");
-                cfgRepairOffHand = Config.Bind(RepairSection, "RepairOffHand", true, "自动修复副手（页1）物品");
-                cfgRepairBackpack = Config.Bind(RepairSection, "RepairBackpack", false, "自动修复背包内物品（背包/背心/衬衫/裤子）");
+                cfgRepairEnabled = Config.Bind(RepairSection, "Enabled", true, Category(CatRepair, "自动修复总开关（每 5 秒检查一次耐久）"));
+                cfgRepairMainHand = Config.Bind(RepairSection, "RepairMainHand", true, Category(CatRepair, "自动修复主手（页0）物品"));
+                cfgRepairOffHand = Config.Bind(RepairSection, "RepairOffHand", true, Category(CatRepair, "自动修复副手（页1）物品"));
+                cfgRepairBackpack = Config.Bind(RepairSection, "RepairBackpack", false, Category(CatRepair, "自动修复背包内物品（背包/背心/衬衫/裤子）"));
                 cfgRepairMinQuality = Config.Bind(RepairSection, "MinQuality", 50,
-                    new ConfigDescription("修复触发的最低耐久阈值：耐久低于该值时尝试修复（0-100）",
+                    Category(CatRepair, "修复触发的最低耐久阈值：耐久低于该值时尝试修复（0-100）",
                         new AcceptableValueRange<int>(0, 100)));
-                cfgRepairNotifyNoMaterials = Config.Bind(RepairSection, "NotifyNoMaterials", true, "耐久低于阈值但修复材料不够时，是否提示");
-                cfgRepairSwitchToEmpty = Config.Bind(RepairSection, "SwitchToEmptyOnCannotRepair", true, "耐久低于阈值但无法修复时，是否直接切换空手防止物品损坏");
+                cfgRepairNotifyNoMaterials = Config.Bind(RepairSection, "NotifyNoMaterials", true, Category(CatRepair, "耐久低于阈值但修复材料不够时，是否提示"));
+                cfgRepairSwitchToEmpty = Config.Bind(RepairSection, "SwitchToEmptyOnCannotRepair", true, Category(CatRepair, "耐久低于阈值但无法修复时，是否直接切换空手防止物品损坏"));
                 cfgRepairNotifyTarget = Config.Bind(RepairSection, "NotifyTarget", "Chat",
-                    new ConfigDescription("修复提示位置：Chat=聊天栏，Popup=屏幕中下方提示栏，Both=两者都显示",
+                    Category(CatRepair, "修复提示位置：Chat=聊天栏，Popup=屏幕中下方提示栏，Both=两者都显示",
                         new AcceptableValueList<string>("Popup", "Chat", "Both"),
-                        new object[] { "Unturned.Cycle" }));
+                        "Unturned.Cycle"));
 
                 lastConfigWriteTime = File.GetLastWriteTimeUtc(Config.ConfigFilePath);
                 ReloadRules();

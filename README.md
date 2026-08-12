@@ -33,6 +33,8 @@ Unturned 单人/本地主机自动合成、自动回收、自动修复插件：�
 
 `BepInEx/config/com.trae.autorecycle.cfg`，游戏运行中修改约 5 秒后自动生效。
 
+在插件管理器（PluginManagerMod）中，配置按 **通用设置 / 自动合成 / 自动回收 / 自动修复** 四类分类导航分组显示（左侧按钮切换）。
+
 | 节 | 键 | 说明 |
 |----|----|----|
 | AutoCraft | Enabled | 自动合成总开关 |
