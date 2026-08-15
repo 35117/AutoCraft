@@ -1,6 +1,6 @@
 // AutoCraft 自动合成插件
 // 作者: 35117 + Deepseek-v4-flash-0731
-// 版本 v26.8.12.1
+// 版本 v26.8.15.1
 // 功能一（合成，主）：每次背包获得物品后，检查配置中的配方；材料不足按配置提示，充足则自动合成。
 //      可选"保留一份原材料"：每种材料至少保留 1 份，保留后仍够一批才合成。
 //      合成界面 Alt+左键点击配方可标记/取消标记自动合成。
@@ -27,7 +27,7 @@ using UnityEngine;
 
 namespace AutoCraft
 {
-    [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.12.1")]
+    [BepInPlugin("com.trae.autorecycle", "自动合成", "26.8.15.1")]
     public class AutoCraftPlugin : BaseUnityPlugin
     {
         // 供 Harmony 补丁访问插件实例与日志
@@ -118,6 +118,7 @@ namespace AutoCraft
         private ConfigEntry<bool> cfgRemindNotEnough;
         private ConfigEntry<string> cfgRecycleMode;
         private ConfigEntry<bool> cfgKeepLastOne;
+        private ConfigEntry<bool> cfgRecycleEquipped;
         private ConfigEntry<string> cfgItemRules;
         // 修复
         private ConfigEntry<bool> cfgRepairEnabled;
@@ -195,6 +196,7 @@ namespace AutoCraft
                         new AcceptableValueList<string>("Whitelist", "Blacklist"),
                         "Unturned.Cycle"));
                 cfgKeepLastOne = Config.Bind(RecycleSection, "KeepLastOne", true, Category(CatRecycle, "保底保留：每个物品始终保留最后 1 个不回收（数量只有 1 时不回收）"));
+                cfgRecycleEquipped = Config.Bind(RecycleSection, "RecycleEquipped", true, Category(CatRecycle, "自动回收是否也处理装备栏（主手/副手/手中，即默认背包页顶部的装备栏）中的物品；关闭则只处理背包/背心/衬衫/裤子页"));
                 cfgItemRules = Config.Bind(RecycleSection, "ItemRules", "6666, 6667",
                     Category(CatRecycle, "回收模式对应的物品 ID 列表，多个用英文逗号分隔，只填 ID。拆解所需数量与产物自动从该物品的游戏 Salvage（拆解）蓝图检测；没有拆解蓝图的物品只会提醒不会回收",
                         null,
@@ -1296,8 +1298,13 @@ namespace AutoCraft
         // ---------- 库存操作 ----------
 
         // 统计背包页（3 背包 / 4 背心 / 5 衬衫 / 6 裤子）中该物品的总数，不含装备栏（用于回收）
+        // 统计该物品的总数（用于回收）。RecycleEquipped 开启时含装备栏（主手/副手/手中），否则只统计背包页
         private int CountItem(ushort itemId)
         {
+            if (cfgRecycleEquipped.Value)
+            {
+                return CountItemAll(itemId);
+            }
             return CountItemInPages(itemId, PlayerInventory.BACKPACK, PlayerInventory.PANTS);
         }
 
@@ -1348,7 +1355,7 @@ namespace AutoCraft
             return count;
         }
 
-        // 从背包页中移除指定数量的物品（倒序移除，避免索引偏移）
+        // 从背包页/装备栏中移除指定数量的物品（倒序移除，避免索引偏移）
         private void RemoveItems(ushort itemId, int count)
         {
             int remaining = count;
@@ -1357,8 +1364,25 @@ namespace AutoCraft
                 return;
             }
             PlayerInventory inventory = localPlayer.inventory;
-            for (byte page = PlayerInventory.BACKPACK; page <= PlayerInventory.PANTS && remaining > 0; page++)
+            // 目标页：装备栏 0-2（主手/副手/手中，RecycleEquipped 开启时）+ 背包页 3-6
+            List<byte> targetPages = new List<byte>();
+            if (cfgRecycleEquipped.Value)
             {
+                for (byte page = 0; page < PlayerInventory.BACKPACK; page++)
+                {
+                    targetPages.Add(page);
+                }
+            }
+            for (byte page = PlayerInventory.BACKPACK; page <= PlayerInventory.PANTS; page++)
+            {
+                targetPages.Add(page);
+            }
+            foreach (byte page in targetPages)
+            {
+                if (remaining <= 0)
+                {
+                    break;
+                }
                 Items items = inventory.items[page];
                 if (items == null)
                 {

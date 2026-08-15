@@ -60,6 +60,7 @@ Unturned 单人/本地主机自动合成、自动回收、自动修复插件：�
 | RecycleRules | RemindNotEnough | 拾取可拆解但数量不足时提醒 |
 | RecycleRules | RecycleMode | Whitelist=只回收列表内 / Blacklist=列表外全部回收（循环按钮） |
 | RecycleRules | KeepLastOne | 保底保留最后 1 个不回收 |
+| RecycleRules | RecycleEquipped | 回收也处理装备栏（主手/副手/手中）物品（默认 true） |
 | RecycleRules | ItemRules | 对应模式的物品 ID 列表（物品选择器） |
 
 ## 编译
